@@ -1,0 +1,352 @@
+name: Build and Release Chronicle Android Bulk Data Downloader
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.versioning.outputs.version }}
+      
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Determine version
+      id: versioning
+      run: |
+        # Get current version from the main script or default to 0.1.0
+        CURRENT_VERSION=$(grep -o 'VERSION = "[^"]*"' Chronicle_Android_bulk_data_downloader.py 2>/dev/null | cut -d'"' -f2 || echo "0.1.0")
+        
+        if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+          # If this is a tag, use the tag name as version
+          VERSION=${GITHUB_REF#refs/tags/v}
+        elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          # For manual workflow, use the specified bump type
+          BUMP_TYPE="${{ github.event.inputs.version_bump }}"
+          
+          # Parse version components (assuming format like 0.0.3)
+          if [[ $CURRENT_VERSION =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+            PATCH="${BASH_REMATCH[3]}"
+            
+            # Apply version bump
+            if [ "$BUMP_TYPE" == "major" ]; then
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+            elif [ "$BUMP_TYPE" == "minor" ]; then
+              MINOR=$((MINOR + 1))
+              PATCH=0
+            else
+              PATCH=$((PATCH + 1))
+            fi
+            
+            VERSION="$MAJOR.$MINOR.$PATCH"
+          else
+            # If version doesn't match expected format, use date-based version
+            VERSION=$(date +'%Y.%m.%d.%H%M')
+          fi
+        else
+          # For regular push, use the date-based version
+          VERSION=$(date +'%Y.%m.%d.%H%M')
+        fi
+        
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+        # Create version file
+        mkdir -p config
+        echo '"""Application version information."""' > config/version.py
+        echo "" >> config/version.py
+        echo "from __future__ import annotations" >> config/version.py
+        echo "" >> config/version.py
+        echo "__version__ = \"$VERSION\"" >> config/version.py
+        echo "__build_date__ = \"$(date +'%Y-%m-%d')\"" >> config/version.py
+        
+        # Update version in main script
+        if [ -f "Chronicle_Android_bulk_data_downloader.py" ]; then
+          sed -i "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" Chronicle_Android_bulk_data_downloader.py
+        fi
+    
+    - name: Upload version artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: version-info
+        path: |
+          config/version.py
+          Chronicle_Android_bulk_data_downloader.py
+
+  build:
+    needs: determine-version
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Download version info
+      uses: actions/download-artifact@v4
+      with:
+        name: version-info
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build with PyInstaller
+      run: |
+        pyinstaller --clean ChronicleAndroidBulkDataDownloader.spec
+    
+    - name: Test executable startup time
+      run: |
+        $exePath = "dist\ChronicleAndroidBulkDataDownloader\ChronicleAndroidBulkDataDownloader.exe"
+        
+        # Check if the executable exists
+        if (-not (Test-Path $exePath)) {
+          Write-Error "Executable not found at: $exePath"
+          exit 1
+        }
+        
+        Write-Host "Testing executable startup time..."
+        
+        # Create a PowerShell script to measure startup time with proper error handling
+        $measureScript = @"
+        try {
+          `$start = Get-Date
+          Write-Host "Starting process: $exePath"
+          
+          # Start process and capture output to avoid UI issues in CI
+          `$processInfo = New-Object System.Diagnostics.ProcessStartInfo
+          `$processInfo.FileName = "$exePath"
+          `$processInfo.RedirectStandardOutput = `$true
+          `$processInfo.RedirectStandardError = `$true
+          `$processInfo.UseShellExecute = `$false
+          `$processInfo.CreateNoWindow = `$false
+          
+          `$process = New-Object System.Diagnostics.Process
+          `$process.StartInfo = `$processInfo
+          `$process.Start() | Out-Null
+          
+          Write-Host "Process started with PID: `$(`$process.Id)"
+          
+          # Non-blocking check for process existence
+          `$startTime = Get-Date
+          `$maxWaitTime = 15  # Maximum seconds to wait
+          `$processStarted = `$false
+          
+          while ((Get-Date) -lt `$startTime.AddSeconds(`$maxWaitTime)) {
+            # Check if process is still running
+            if (`$process.HasExited) {
+              Write-Host "Process exited prematurely with code: `$(`$process.ExitCode)"
+              exit 1
+            }
+            
+            # Process exists, consider it started
+            `$processStarted = `$true
+            `$end = Get-Date
+            `$duration = (`$end - `$start).TotalSeconds
+            Write-Host "Application started in `$duration seconds"
+            break
+          }
+          
+          if (-not `$processStarted) {
+            Write-Host "ERROR: Timeout waiting for application to start"
+            # Force kill the process if it's still running
+            if (-not `$process.HasExited) {
+              Write-Host "Killing unresponsive process"
+              `$process.Kill()
+            }
+            exit 1
+          }
+          
+          # Give it a moment to initialize
+          Start-Sleep -Seconds 1
+          
+          # End the process
+          if (-not `$process.HasExited) {
+            Write-Host "Terminating process"
+            `$process.Kill()
+          }
+          
+          `$duration = (`$end - `$start).TotalSeconds
+          if (`$duration -gt 10) {
+            Write-Host "WARNING: Startup time exceeds 10 seconds (`$duration seconds)"
+            exit 2
+          }
+          
+          Write-Host "Test completed successfully. Startup time: `$duration seconds"
+          exit 0
+        }
+        catch {
+          Write-Host "ERROR: `$_"
+          Get-Process | Where-Object { `$_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+            Write-Host "Killing leftover process with ID: `$(`$_.Id)"
+            Stop-Process -Id `$_.Id -Force -ErrorAction SilentlyContinue
+          }
+          exit 1
+        }
+        "@
+        
+        Set-Content -Path "measure-startup.ps1" -Value $measureScript
+        
+        try {
+          # Run the measurement script with a timeout
+          $overallTimeout = 30  # seconds
+          $job = Start-Job -ScriptBlock { pwsh -File "measure-startup.ps1" }
+          
+          # Wait for job with timeout
+          if (Wait-Job -Job $job -Timeout $overallTimeout) {
+            $result = Receive-Job -Job $job
+            Write-Host $result
+            
+            # Check exit code from output
+            if ($result -match "Test completed successfully") {
+              Write-Host "Executable startup test passed!"
+            } elseif ($result -match "WARNING: Startup time exceeds") {
+              Write-Warning "Executable starts but startup time is high"
+            } else {
+              Write-Error "Failed to start executable properly"
+              exit 1
+            }
+          } else {
+            Write-Host "Overall timeout reached. Measurement script didn't complete in $overallTimeout seconds"
+            Stop-Job -Job $job
+            Remove-Job -Job $job -Force
+            
+            # Kill any remaining processes
+            Get-Process | Where-Object { $_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+              Write-Host "Killing leftover process with ID: $($_.Id)"
+              Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+            }
+            
+            exit 1
+          }
+        } catch {
+          Write-Error "Error testing executable: $_"
+          
+          # Kill any remaining processes
+          Get-Process | Where-Object { $_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+            Write-Host "Killing leftover process with ID: $($_.Id)"
+            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+          }
+          
+          exit 1
+        } finally {
+          Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+      shell: pwsh
+    
+    - name: Create ZIP archive
+      run: |
+        # Ensure build was successful
+        if (Test-Path dist/ChronicleAndroidBulkDataDownloader) {
+          # Extract version safely
+          try {
+            $version = python -c "import re; match = re.search(r'VERSION = \"(.*)\"', [System.IO.File]::ReadAllText('Chronicle_Android_bulk_data_downloader.py')); print(match.Groups[1].Value if match else '0.1.0')"
+          } catch {
+            $version = Get-Date -Format "yyyy.MM.dd"
+          }
+          
+          # Create a temporary directory for all files
+          $tempDir = "ChronicleAndroidBulkDataDownloader-full-$version"
+          New-Item -Path $tempDir -ItemType Directory
+          
+          # Copy all repository files (except .git, dist, build, etc.)
+          Write-Host "Copying repository files..."
+          Get-ChildItem -Path "." -Exclude ".git", ".github", "dist", "build", "__pycache__", "*.spec", "*.zip", "*.log", "measure-startup.ps1", "README.txt", $tempDir | ForEach-Object {
+            if (Test-Path $_.FullName -PathType Container) {
+              # Copy directories
+              Copy-Item -Path $_.FullName -Destination "$tempDir/$($_.Name)" -Recurse
+            } else {
+              # Copy files
+              Copy-Item -Path $_.FullName -Destination "$tempDir/$($_.Name)"
+            }
+          }
+          
+          # Copy the built executable files directly into the main directory
+          Write-Host "Copying built executable..."
+          Copy-Item -Path dist/ChronicleAndroidBulkDataDownloader/* -Destination "$tempDir" -Recurse
+          
+          # Create ZIP with all content
+          Write-Host "Creating ZIP archive..."
+          Compress-Archive -Path $tempDir/* -DestinationPath "ChronicleAndroidBulkDataDownloader-$version.zip"
+          
+          # Clean up temporary directory
+          Remove-Item -Path $tempDir -Recurse -Force
+        } else {
+          Write-Error "Build directory not found. The PyInstaller build may have failed."
+          exit 1
+        }
+      shell: pwsh
+      
+    - name: Upload executable as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ChronicleAndroidBulkDataDownloader
+        path: dist/ChronicleAndroidBulkDataDownloader
+        
+    - name: Upload ZIP archive as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ChronicleAndroidBulkDataDownloader-zip
+        path: ChronicleAndroidBulkDataDownloader-*.zip
+
+  release:
+    needs: [determine-version, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download version info
+      uses: actions/download-artifact@v4
+      with:
+        name: version-info
+    
+    - name: Download build artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: ChronicleAndroidBulkDataDownloader-zip
+    
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release ${{ needs.determine-version.outputs.version }}
+        files: ChronicleAndroidBulkDataDownloader-*.zip
+        draft: false
+        prerelease: false
+        generate_release_notes: true 
