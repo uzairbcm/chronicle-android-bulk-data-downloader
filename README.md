@@ -2,7 +2,7 @@
 
 A tool for downloading Chronicle Android data in bulk. Not affiliated with Chronicle or GetMethodic.
 
-**Please do not alter the rate limiting.**
+**Please do not lower or remove the rate limiting.**
 
 ## About the Application
 
