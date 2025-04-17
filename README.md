@@ -16,10 +16,12 @@ This application provides a GUI interface for downloading data from Chronicle st
 
 1. Select the download folder
 2. Paste the token you copied from the Chronicle GetMethodic website, located here:
+   
 ![Authorization Token Copy](./authorization_token_copy_location.png)
-3. Enter a valid Chronicle study ID
-4. Optionally provide participant IDs to filter (separated by commas)
-   a. Exclusive filtering (default) excludes the IDs that you list
-   b. Inclusive filtering (when checkbox is checked) only downloads the IDs that you listed
+
+4. Enter a valid Chronicle study ID
+5. Optionally provide participant IDs to filter (separated by commas)
+   - a. Exclusive filtering (default) excludes the IDs that you list
+   - b. Inclusive filtering (when checkbox is checked) only downloads the IDs that you listed
 4. Check which data types to download
 5. Click the "Run" button
