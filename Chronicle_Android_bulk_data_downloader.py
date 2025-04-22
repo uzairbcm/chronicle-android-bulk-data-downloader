@@ -238,7 +238,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         # Initialize instance variables
         self.download_folder: Path | str = ""
         self.temp_download_file_pattern: str = r"[\s\S]*.csv"
-        self.dated_file_pattern: str = r"([\s\S]*(\d{1,2}[\.|-]\d{1,2}[\.|-]\d{2,4})[\s\S]*.csv)"
+        self.dated_file_pattern: str = r"([\s\S]*(\d{2}[\.|-]\d{2}[\.|-]\d{4})[\s\S]*.csv)"
         self.raw_data_file_pattern: str = r"[\s\S]*(Raw)[\s\S]*.csv"
         self.survey_data_file_pattern: str = r"[\s\S]*(Survey)[\s\S]*.csv"
         self.preprocessed_download_data_file_pattern: str = r"[\s\S]*(Downloaded Preprocessed)[\s\S]*.csv"
@@ -620,7 +620,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         )
 
         for file in Chronicle_dated_files:
-            re_file_date = re.search(r"(\d{1,2}[\.|-]\d{1,2}[\.|-]\d{2,4})", str(file))
+            re_file_date = re.search(r"(\d{2}[\.|-]\d{2}[\.|-]\d{4})", str(file))
             if not re_file_date:
                 msg = f"File {file} possibly altered while script was running, please avoid doing this."
                 LOGGER.error(msg)
