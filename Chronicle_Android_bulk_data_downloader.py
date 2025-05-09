@@ -11,7 +11,6 @@ from datetime import datetime as datetime_class
 from datetime import tzinfo
 from enum import StrEnum
 from pathlib import Path
-from typing import Callable
 
 import aiofiles
 import httpx
@@ -34,6 +33,12 @@ from PyQt6.QtWidgets import (
 )
 
 from config.version import __build_date__, __version__
+
+# HTTP client constants
+MAX_RETRIES = 1
+CONNECTION_TIMEOUT = 30
+REQUEST_TIMEOUT = 60
+RATE_LIMIT_DELAY = 3  # seconds between requests
 
 
 class FilterType(StrEnum):
@@ -105,6 +110,7 @@ class DownloadThreadWorker(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
     progress_text = pyqtSignal(str)
+    cancelled = pyqtSignal()
 
     def __init__(self, parent_: ChronicleAndroidBulkDataDownloader) -> None:
         super().__init__(parent_)
@@ -113,6 +119,8 @@ class DownloadThreadWorker(QThread):
         self.total_progress = 100
         self.files_completed = 0
         self.total_files = 0
+        self.is_cancelled = False
+        self._client_lock = asyncio.Lock()
 
     def run(self) -> None:
         """
@@ -121,7 +129,15 @@ class DownloadThreadWorker(QThread):
         try:
             self._run()
         except Exception:
-            self.error.emit(traceback.format_exc())
+            self.error.emit("An error occurred while downloading the data")
+
+    def cancel(self) -> None:
+        """
+        Signals the worker to cancel the download process.
+        """
+        self.is_cancelled = True
+        self.cancelled.emit()
+        LOGGER.info("Download cancellation requested")
 
     def _run(self):
         """
@@ -149,7 +165,7 @@ class DownloadThreadWorker(QThread):
 
         try:
             # Execute download
-            asyncio.run(self.parent_.download_participant_Chronicle_data_from_study(self.update_progress))
+            asyncio.run(self.parent_.download_participant_Chronicle_data_from_study(self))
         except httpx.HTTPStatusError as e:
             error_code = e.response.status_code
             description = {
@@ -163,9 +179,13 @@ class DownloadThreadWorker(QThread):
             return
         except Exception:
             LOGGER.exception("An error occurred while downloading the data")
-            self.error.emit(f"An error occurred while downloading the data: {traceback.format_exc()}")
+            self.error.emit("An error occurred while downloading the data")
             return
         else:
+            if self.is_cancelled:
+                LOGGER.info("Download process was cancelled by user")
+                return
+
             # Process downloaded data
             self.update_progress(90)
             self.parent_.archive_downloaded_data()
@@ -244,6 +264,11 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.preprocessed_download_data_file_pattern: str = r"[\s\S]*(Downloaded Preprocessed)[\s\S]*.csv"
         self.time_use_diary_download_data_file_pattern: str = r"[\s\S]*(Time Use Diary)[\s\S]*.csv"
 
+        self.semaphore = asyncio.Semaphore(1)  # Ensure only one request at a time
+        self.client_lock = asyncio.Lock()
+        self.download_active = False
+        self._http_client = None
+
         self.worker = None
         # Initialize UI
         self._init_UI()
@@ -280,7 +305,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         Initializes the user interface.
         """
         LOGGER.debug("Initializing UI")
-        self.setWindowTitle(f"Chronicle Android Bulk Data Downloader {__version__} Build {__build_date__}")
+        self.setWindowTitle(f"Chronicle Android Bulk Data Downloader v{__version__} Build {__build_date__}")
         self.setGeometry(100, 100, 500, 400)  # Made a bit taller for progress bar
 
         main_layout = QVBoxLayout()
@@ -309,12 +334,12 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         main_layout.addLayout(self._create_time_use_diary_checkbox_layout())
         main_layout.addSpacing(10)
 
-        # In the _init_UI method, modify the progress bar
+        # Add the progress bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("%p% - %v")  # Default format
+        self.progress_bar.setFormat("%p% - %v")
         self.progress_bar.setStyleSheet("""
             QProgressBar {
                 border: 1px solid #bdc3c7;
@@ -750,16 +775,45 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         LOGGER.debug("Filtered participant ID list using inclusive filter")
         return filtered_participant_id_list
 
+    async def _get_client(self) -> httpx.AsyncClient:
+        """
+        Gets or creates an HTTP client with proper configuration.
+        """
+        async with self.client_lock:
+            if self._http_client is None or self._http_client.is_closed:
+                LOGGER.debug("Creating new HTTP client")
+                self._http_client = httpx.AsyncClient(
+                    http2=True,
+                    timeout=httpx.Timeout(timeout=CONNECTION_TIMEOUT, read=REQUEST_TIMEOUT),
+                    limits=httpx.Limits(max_keepalive_connections=1, max_connections=1, keepalive_expiry=CONNECTION_TIMEOUT),
+                    follow_redirects=True,
+                )
+            return self._http_client
+
+    async def _close_client(self) -> None:
+        """
+        Safely closes the HTTP client if it exists.
+        """
+        async with self.client_lock:
+            if self._http_client is not None and not self._http_client.is_closed:
+                try:
+                    await self._http_client.aclose()
+                    LOGGER.debug("HTTP client closed successfully")
+                finally:
+                    self._http_client = None
+
     async def _download_participant_Chronicle_data_type(
-        self,
-        client: httpx.AsyncClient,
-        participant_id: str,
-        Chronicle_download_data_type: ChronicleDownloadDataType,
-    ):
+        self, worker: DownloadThreadWorker, participant_id: str, Chronicle_download_data_type: ChronicleDownloadDataType, retry_count: int = 0
+    ) -> bool:
         """
         Downloads data of a specific type for a participant.
+        Returns True if successful, False otherwise.
         """
-        semaphore = asyncio.Semaphore(1)
+        if worker.is_cancelled:
+            LOGGER.debug(f"Download cancelled for {participant_id}, {Chronicle_download_data_type}")
+            return False
+
+        # Determine data type and URL
         match Chronicle_download_data_type:
             case ChronicleDownloadDataType.RAW:
                 data_type_str = "Raw Data"
@@ -782,152 +836,243 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             case _:
                 msg = f"Unrecognized Chronicle data download type {Chronicle_download_data_type}"
                 raise ValueError(msg)
-        async with semaphore:
-            csv_response = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {self.authorization_token_entry.toPlainText().strip()}"},
-                timeout=60,
+
+        try:
+            # Get client and make request with proper rate limiting
+            async with self.semaphore:
+                if worker.is_cancelled:
+                    return False
+
+                # Get or create client
+                client = await self._get_client()
+
+                # Check for client validity
+                if client.is_closed:
+                    LOGGER.warning("Client was closed, creating a new one")
+                    client = await self._get_client()
+
+                # Make request with authorization header
+                csv_response = await client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {self.authorization_token_entry.toPlainText().strip()}"},
+                    timeout=REQUEST_TIMEOUT,
+                )
+                csv_response.raise_for_status()
+
+            # Prepare output location
+            output_filepath = (
+                Path(self.download_folder)
+                / f"{participant_id} Chronicle Android {data_type_str} {datetime_class.now(get_local_timezone()).strftime('%m-%d-%Y')}.csv"
             )
+            output_filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        csv_response.raise_for_status()
+            # Write response to file
+            async with aiofiles.open(output_filepath, "wb") as f:
+                await f.write(csv_response.content)
 
-        output_filepath = (
-            Path(self.download_folder)
-            / f"{participant_id} Chronicle Android {data_type_str} {datetime_class.now(get_local_timezone()).strftime('%m-%d-%Y')}.csv"
-        )
-        output_filepath.parent.mkdir(parents=True, exist_ok=True)
+            LOGGER.debug(f"Downloaded {data_type_str} for participant {participant_id}")
 
-        async with aiofiles.open(output_filepath, "wb") as f:
-            await f.write(csv_response.content)
+            # Add rate limiting delay
+            await asyncio.sleep(RATE_LIMIT_DELAY)
+            return True
 
-        LOGGER.debug(f"Downloaded {data_type_str} for participant {participant_id}")
+        except httpx.HTTPStatusError as e:
+            error_code = e.response.status_code
+            if error_code in (429, 502, 503, 504) and retry_count < MAX_RETRIES:
+                # Rate limiting or temporary server error, retry with backoff
+                retry_delay = (2**retry_count) * RATE_LIMIT_DELAY
+                LOGGER.warning(f"HTTP {error_code} error, retrying in {retry_delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
+                await asyncio.sleep(retry_delay)
+                return await self._download_participant_Chronicle_data_type(worker, participant_id, Chronicle_download_data_type, retry_count + 1)
+            else:
+                LOGGER.exception(f"HTTP error {error_code} when downloading {data_type_str} for {participant_id}")
+                raise
+        except httpx.RequestError as e:
+            if retry_count < MAX_RETRIES:
+                # Network error, retry with backoff
+                retry_delay = (2**retry_count) * RATE_LIMIT_DELAY
+                LOGGER.warning(f"Request error: {e}, retrying in {retry_delay}s (attempt {retry_count + 1}/{MAX_RETRIES})")
 
-        await asyncio.sleep(3)  # Extra rate limiting
+                # Recreate client on connection errors
+                await self._close_client()
 
-    async def download_participant_Chronicle_data_from_study(self, progress_callback: Callable[[int, int, int], None]) -> None:
+                await asyncio.sleep(retry_delay)
+                return await self._download_participant_Chronicle_data_type(worker, participant_id, Chronicle_download_data_type, retry_count + 1)
+            else:
+                LOGGER.exception(f"Request error when downloading {data_type_str} for {participant_id}: {e}")
+                raise
+        except Exception as e:
+            LOGGER.exception(f"Error downloading {data_type_str} for {participant_id}: {e}")
+            raise
+
+    async def download_participant_Chronicle_data_from_study(self, worker: DownloadThreadWorker) -> None:
         """
         Downloads data for all participants in the study.
         """
-        client = httpx.AsyncClient(http2=True)
+        self.download_active = True
 
-        participant_stats = await client.get(
-            f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/stats",
-            headers={"Authorization": f"Bearer {self.authorization_token_entry.toPlainText().strip()}"},
-            timeout=60,
-        )
+        try:
+            # Get client for initial participant stats request
+            client = await self._get_client()
 
-        participant_stats.raise_for_status()
+            # Get participant list
+            participant_stats = await client.get(
+                f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/stats",
+                headers={"Authorization": f"Bearer {self.authorization_token_entry.toPlainText().strip()}"},
+                timeout=REQUEST_TIMEOUT,
+            )
+            participant_stats.raise_for_status()
 
-        participant_id_list = [item["participantId"] for item in participant_stats.json().values()]
-        filtered_participant_id_list = self._filter_participant_id_list(participant_id_list)
+            participant_id_list = [item["participantId"] for item in participant_stats.json().values()]
+            filtered_participant_id_list = self._filter_participant_id_list(participant_id_list)
 
-        if not filtered_participant_id_list:
-            msg = "No participant IDs with data available to download were found after filtering. Please double check your filter and/or participants in your study on the Chronicle website."
-            LOGGER.error(msg)
-            raise ValueError(msg)
+            if not filtered_participant_id_list:
+                msg = "No participant IDs with data available to download were found after filtering. Please double check your filter and/or participants in your study on the Chronicle website."
+                LOGGER.error(msg)
+                raise ValueError(msg)
 
-        # Calculate total downloads for progress tracking
-        total_data_types = sum(
-            [
-                self.download_raw_data_checkbox.isChecked(),
-                self.download_preprocessed_data_checkbox.isChecked(),
-                self.download_survey_data_checkbox.isChecked(),
-                self.download_time_use_diary_daytime_checkbox.isChecked(),
-                self.download_time_use_diary_nighttime_checkbox.isChecked(),
-                self.download_time_use_diary_summarized_checkbox.isChecked(),
-            ]
-        )
+            # Calculate total downloads for progress tracking
+            total_data_types = sum(
+                [
+                    self.download_raw_data_checkbox.isChecked(),
+                    self.download_preprocessed_data_checkbox.isChecked(),
+                    self.download_survey_data_checkbox.isChecked(),
+                    self.download_time_use_diary_daytime_checkbox.isChecked(),
+                    self.download_time_use_diary_nighttime_checkbox.isChecked(),
+                    self.download_time_use_diary_summarized_checkbox.isChecked(),
+                ]
+            )
 
-        total_downloads = len(filtered_participant_id_list) * total_data_types
-        downloads_completed = 0
-        progress_callback(10, downloads_completed, total_downloads)  # Start at 10% with 0 completed
+            total_downloads = len(filtered_participant_id_list) * total_data_types
+            downloads_completed = 0
+            worker.update_progress(10, downloads_completed, total_downloads)  # Start at 10% with 0 completed
 
-        for i, participant_id in enumerate(filtered_participant_id_list):
-            if self.download_raw_data_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.RAW,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.RAW} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+            # Download data for each participant
+            for i, participant_id in enumerate(filtered_participant_id_list):
+                # Check for cancellation
+                if worker.is_cancelled:
+                    LOGGER.info("Download process cancelled by user")
+                    break
 
-            if self.download_preprocessed_data_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.PREPROCESSED,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.PREPROCESSED} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+                # Download each selected data type
+                if self.download_raw_data_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.RAW,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.RAW} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
 
-            if self.download_survey_data_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.SURVEY,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.SURVEY} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+                if worker.is_cancelled:
+                    break
 
-            if self.download_time_use_diary_daytime_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+                if self.download_preprocessed_data_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.PREPROCESSED,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.PREPROCESSED} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
 
-            if self.download_time_use_diary_nighttime_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_NIGHTTIME,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_NIGHTTIME} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+                if worker.is_cancelled:
+                    break
 
-            if self.download_time_use_diary_summarized_checkbox.isChecked():
-                await self._download_participant_Chronicle_data_type(
-                    client=client,
-                    participant_id=participant_id,
-                    Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_SUMMARIZED,
-                )
-                downloads_completed += 1
-                progress_value = 10 + int((downloads_completed / total_downloads) * 80)
-                progress_callback(progress_value, downloads_completed, total_downloads)
-                LOGGER.debug(
-                    f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_SUMMARIZED} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
-                )
+                if self.download_survey_data_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.SURVEY,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.SURVEY} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
+
+                if worker.is_cancelled:
+                    break
+
+                if self.download_time_use_diary_daytime_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
+
+                if worker.is_cancelled:
+                    break
+
+                if self.download_time_use_diary_nighttime_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_NIGHTTIME,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_NIGHTTIME} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
+
+                if worker.is_cancelled:
+                    break
+
+                if self.download_time_use_diary_summarized_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.TIME_USE_DIARY_SUMMARIZED,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.TIME_USE_DIARY_SUMMARIZED} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
+        finally:
+            # Ensure client is properly closed when done
+            await self._close_client()
+            self.download_active = False
 
     def _run(self):
         """
         Initiates the download process.
         """
+        # Prevent multiple concurrent downloads
+        if self.download_active:
+            LOGGER.warning("Download already in progress, ignoring request")
+            return
+
         # Clean up any existing worker
         if self.worker is not None:
             if self.worker.isRunning():
+                # Request cancellation first
+                self.worker.cancel()
+                # Then properly terminate
                 self.worker.terminate()
                 self.worker.wait()
 
@@ -938,6 +1083,8 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                 self.worker.progress.disconnect()
                 if hasattr(self.worker, "progress_text"):
                     self.worker.progress_text.disconnect()
+                if hasattr(self.worker, "cancelled"):
+                    self.worker.cancelled.disconnect()
             except (RuntimeError, TypeError):
                 # Ignore errors if signals were not connected
                 pass
@@ -951,8 +1098,21 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.worker.progress.connect(self.progress_bar.setValue)
         if hasattr(self.worker, "progress_text"):
             self.worker.progress_text.connect(self.progress_bar.setFormat)
+        if hasattr(self.worker, "cancelled"):
+            self.worker.cancelled.connect(lambda: LOGGER.info("Download cancelled"))
+
+        # Set download_active flag before starting the worker
+        self.download_active = True
 
         # Start the worker
+        self._disable_ui_during_download()
+        self.progress_bar.setValue(0)
+        self.worker.start()
+
+    def _disable_ui_during_download(self) -> None:
+        """
+        Disable UI controls during download.
+        """
         self.select_download_folder_button.setEnabled(False)
         self.authorization_token_entry.setEnabled(False)
         self.study_id_entry.setEnabled(False)
@@ -964,31 +1124,16 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.download_time_use_diary_daytime_checkbox.setEnabled(False)
         self.download_time_use_diary_nighttime_checkbox.setEnabled(False)
         self.download_time_use_diary_summarized_checkbox.setEnabled(False)
-        self.run_button.setEnabled(False)
-        self.progress_bar.setValue(0)
-        self.worker.start()
+        # Change run button to cancel button
+        self.run_button.setText("Cancel")
+        self.run_button.clicked.disconnect()
+        self.run_button.clicked.connect(self._cancel_download)
+        self.run_button.setEnabled(True)
 
-    def on_download_complete(self) -> None:
+    def _enable_ui_after_download(self) -> None:
         """
-        Handles the completion of the download process.
+        Enable UI controls after download completion or error.
         """
-        # Don't delete the worker here - just disable connections
-        # We'll keep the reference until a new worker is created
-        if self.worker:
-            self.worker.finished.disconnect()
-            self.worker.error.disconnect()
-            # self.worker.progress.disconnect()
-            # if hasattr(self.worker, "progress_text"):
-            #     self.worker.progress_text.disconnect()
-
-        # msg_box = QMessageBox()
-        # msg_box.setIcon(QMessageBox.Icon.Information)
-        # msg_box.setWindowTitle("Download Complete")
-        # msg_box.setText("The download process has completed successfully.")
-        # msg_box.setInformativeText("Please check the download folder for the downloaded files.")
-        # msg_box.exec()
-
-        # Rest of the completion handling...
         self.select_download_folder_button.setEnabled(True)
         self.authorization_token_entry.setEnabled(True)
         self.study_id_entry.setEnabled(True)
@@ -1000,21 +1145,62 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.download_time_use_diary_daytime_checkbox.setEnabled(True)
         self.download_time_use_diary_nighttime_checkbox.setEnabled(True)
         self.download_time_use_diary_summarized_checkbox.setEnabled(True)
+        # Restore run button
+        self.run_button.setText("Run")
+        self.run_button.clicked.disconnect()
+        self.run_button.clicked.connect(self._run)
         self.run_button.setEnabled(True)
+
+    def _cancel_download(self) -> None:
+        """
+        Cancels the current download process.
+        """
+        if self.worker and self.worker.isRunning():
+            LOGGER.info("Cancelling download process")
+            self.worker.cancel()
+            self.run_button.setEnabled(False)
+            self.run_button.setText("Cancelling...")
+            LOGGER.debug("Waiting for download process to gracefully terminate")
+        elif self.download_active:
+            LOGGER.warning("Resetting inconsistent download_active state")
+            self.download_active = False
+            self._enable_ui_after_download()
+
+    def on_download_complete(self) -> None:
+        """
+        Handles the completion of the download process.
+        """
+        # Reset download_active flag
+        self.download_active = False
+
+        if self.worker:
+            try:
+                self.worker.finished.disconnect()
+                self.worker.error.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+
+        self._enable_ui_after_download()
+        if self.worker and self.worker.is_cancelled:
+            self.progress_bar.setFormat("Download cancelled")
+            LOGGER.info("Download process was cancelled")
+        else:
+            self.progress_bar.setFormat("Download complete!")
+            LOGGER.info("Download process completed successfully")
 
     def on_download_error(self, error_message: str) -> None:
         """
         Handles errors that occur during the download process.
         """
-        # Same as above - don't delete the worker here
-        if self.worker:
-            self.worker.finished.disconnect()
-            self.worker.error.disconnect()
-            # self.worker.progress.disconnect()
-            # if hasattr(self.worker, "progress_text"):
-            #     self.worker.progress_text.disconnect()
+        self.download_active = False
 
-        # Show error message in a QMessageBox
+        if self.worker:
+            try:
+                self.worker.finished.disconnect()
+                self.worker.error.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+
         msg_box = QMessageBox()
         msg_box.setIcon(QMessageBox.Icon.Critical)
         msg_box.setWindowTitle("Download Error")
@@ -1022,19 +1208,9 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         msg_box.setInformativeText(error_message)
         msg_box.exec()
 
-        # Rest of the error handling...
-        self.select_download_folder_button.setEnabled(True)
-        self.authorization_token_entry.setEnabled(True)
-        self.study_id_entry.setEnabled(True)
-        self.inclusive_filter_checkbox.setEnabled(True)
-        self.participant_ids_to_filter_list_entry.setEnabled(True)
-        self.download_raw_data_checkbox.setEnabled(True)
-        self.download_survey_data_checkbox.setEnabled(True)
-        self.download_preprocessed_data_checkbox.setEnabled(True)
-        self.download_time_use_diary_daytime_checkbox.setEnabled(True)
-        self.download_time_use_diary_nighttime_checkbox.setEnabled(True)
-        self.download_time_use_diary_summarized_checkbox.setEnabled(True)
-        self.run_button.setEnabled(True)
+        self._enable_ui_after_download()
+        self.progress_bar.setFormat("Error: %p%")
+        LOGGER.error("Download error occurred")
 
 
 if __name__ == "__main__":
