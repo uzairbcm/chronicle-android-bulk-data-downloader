@@ -15,7 +15,7 @@ from pathlib import Path
 import aiofiles
 import httpx
 import regex as re
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -129,7 +129,7 @@ class DownloadThreadWorker(QThread):
         try:
             self._run()
         except Exception:
-            self.error.emit("An error occurred while downloading the data")
+            self.error.emit(f"An error occurred while downloading the data: {traceback.format_exc()}")
 
     def cancel(self) -> None:
         """
@@ -138,6 +138,10 @@ class DownloadThreadWorker(QThread):
         self.is_cancelled = True
         self.cancelled.emit()
         LOGGER.info("Download cancellation requested")
+
+        # Emit finished signal directly to ensure UI updates
+        # This will be processed after the current operation completes
+        QTimer.singleShot(100, self.finished.emit)
 
     def _run(self):
         """
@@ -179,7 +183,7 @@ class DownloadThreadWorker(QThread):
             return
         except Exception:
             LOGGER.exception("An error occurred while downloading the data")
-            self.error.emit("An error occurred while downloading the data")
+            self.error.emit(f"An error occurred while downloading the data: {traceback.format_exc()}")
             return
         else:
             if self.is_cancelled:
@@ -1157,14 +1161,87 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         """
         if self.worker and self.worker.isRunning():
             LOGGER.info("Cancelling download process")
+
+            # Disconnect from normal flow handlers
+            try:
+                self.worker.finished.disconnect(self.on_download_complete)
+            except (RuntimeError, TypeError):
+                pass
+
+            try:
+                self.worker.error.disconnect(self.on_download_error)
+            except (RuntimeError, TypeError):
+                pass
+
+            # Setup direct connection for cancellation completion
+            self.worker.finished.connect(self._handle_cancellation_complete)
+
+            # Request worker to cancel
             self.worker.cancel()
             self.run_button.setEnabled(False)
             self.run_button.setText("Cancelling...")
             LOGGER.debug("Waiting for download process to gracefully terminate")
+
+            # Absolute failsafe: Force UI reset after timeout no matter what
+            QTimer.singleShot(3000, self._force_cancellation_if_needed)
         elif self.download_active:
             LOGGER.warning("Resetting inconsistent download_active state")
             self.download_active = False
             self._enable_ui_after_download()
+
+    def _force_cancellation_if_needed(self) -> None:
+        """
+        Forcibly resets the UI if the worker is still running after cancellation timeout.
+        """
+        # Direct approach: Always reset UI if we're still in cancelling state
+        if self.run_button.text() == "Cancelling...":
+            LOGGER.warning("Cancellation timed out or signal was missed, forcing UI reset")
+
+            # Reset download flag
+            self.download_active = False
+
+            # Reset button text immediately
+            self.run_button.setText("Run")
+
+            # Ensure all UI elements are enabled
+            self._enable_ui_after_download()
+
+            # Update progress bar
+            self.progress_bar.setFormat("Download cancelled")
+
+            # If worker is still running, try to terminate it
+            if self.worker and self.worker.isRunning():
+                try:
+                    self.worker.terminate()
+                    self.worker.wait(500)
+                except Exception as e:
+                    LOGGER.error(f"Error terminating worker: {e}")
+
+    def _handle_cancellation_complete(self) -> None:
+        """
+        Handles the completion of cancellation process.
+        """
+        LOGGER.info("Cancellation complete, resetting UI")
+
+        # Reset flags
+        self.download_active = False
+
+        # Reset UI
+        self._enable_ui_after_download()
+        self.progress_bar.setFormat("Download cancelled")
+
+        # Clean up worker connections
+        if self.worker:
+            try:
+                self.worker.finished.disconnect()
+                self.worker.error.disconnect()
+                self.worker.progress.disconnect()
+                if hasattr(self.worker, "progress_text"):
+                    self.worker.progress_text.disconnect()
+                if hasattr(self.worker, "cancelled"):
+                    self.worker.cancelled.disconnect()
+            except Exception:
+                pass
 
     def on_download_complete(self) -> None:
         """
@@ -1206,6 +1283,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         msg_box.setWindowTitle("Download Error")
         msg_box.setText("An error occurred during the download process.")
         msg_box.setInformativeText(error_message)
+
         msg_box.exec()
 
         self._enable_ui_after_download()
@@ -1214,14 +1292,41 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
 
 
 if __name__ == "__main__":
+    # Set up logging with proper path handling for app bundles
+    log_file = "Chronicle_Android_bulk_data_downloader.log"
+    if getattr(sys, "frozen", False):
+        # Running as PyInstaller bundle
+        bundle_dir = Path(sys.executable).parent
+        if sys.platform.startswith("darwin"):
+            # For macOS app bundles, ensure we use a writable location for logs
+            # Using ~/Library/Logs/ChronicleAndroidBulkDataDownloader/
+            log_dir = Path.home() / "Library" / "Logs" / "ChronicleAndroidBulkDataDownloader"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "Chronicle_Android_bulk_data_downloader.log"
+        else:
+            # For Windows, keep log in same directory as executable
+            log_file = bundle_dir / log_file
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s.%(msecs)03d - %(process)d - %(thread)d - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s - %(message)s",
-        handlers=[logging.FileHandler("Chronicle_Android_bulk_data_downloader.log"), logging.StreamHandler()],
+        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
     )
 
     LOGGER = logging.getLogger(__name__)
-    sys.argv += ["-platform", "windows:darkmode=1"]
+    LOGGER.info(f"Application starting, version {__version__}, build date {__build_date__}")
+    LOGGER.info(f"Platform: {sys.platform}, Python: {sys.version}")
+    LOGGER.info(f"Working directory: {Path.cwd()}")
+    LOGGER.info(f"Log file location: {log_file}")
+
+    # Use OS-specific platform plugin
+    if sys.platform.startswith("win"):
+        sys.argv += ["-platform", "windows:darkmode=1"]
+    elif sys.platform.startswith("darwin"):
+        # Ensure we're using the correct platform for macOS
+        sys.argv += ["-platform", "cocoa"]
+        LOGGER.info("Using cocoa platform for macOS")
+
     app = QApplication(sys.argv)
     ex = ChronicleAndroidBulkDataDownloader()
     ex.show()

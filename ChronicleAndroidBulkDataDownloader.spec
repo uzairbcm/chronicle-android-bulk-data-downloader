@@ -2,9 +2,14 @@
 
 from pathlib import Path
 import os
+import sys
 import PyInstaller.config
 
 block_cipher = None
+
+# Determine platform
+is_windows = sys.platform.startswith('win')
+is_macos = sys.platform.startswith('darwin')
 
 # List all modules that need to be included
 hidden_imports = [
@@ -50,34 +55,80 @@ pyz = PYZ(
     compress=True
 )
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
-    exclude_binaries=True,
-    name='ChronicleAndroidBulkDataDownloader',
-    debug=False,
-    bootloader_ignore_signals=True,
-    strip=True,
-    upx=True,
-    upx_exclude=['vcruntime140.dll', 'python*.dll', '*.pyd'],
-    console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-    icon=None,
-    uac_admin=False,
-)
+# Windows EXE configuration
+if is_windows:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name='ChronicleAndroidBulkDataDownloader',
+        debug=False,
+        bootloader_ignore_signals=True,
+        strip=True,
+        upx=True,
+        upx_exclude=['vcruntime140.dll', 'python*.dll', '*.pyd'],
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+        icon=None,
+        uac_admin=False,
+    )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=['vcruntime140.dll', 'python*.dll', '*.pyd'],
-    name='ChronicleAndroidBulkDataDownloader',
-) 
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=['vcruntime140.dll', 'python*.dll', '*.pyd'],
+        name='ChronicleAndroidBulkDataDownloader',
+    )
+
+# macOS App configuration
+if is_macos:
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name='ChronicleAndroidBulkDataDownloader',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,  # Setting to False to avoid stripping symbols that might be needed
+        upx=True,
+        console=False,
+        disable_windowed_traceback=False,
+        argv_emulation=True,  # Enable argv emulation for macOS
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        name='ChronicleAndroidBulkDataDownloader',
+    )
+    
+    app = BUNDLE(
+        coll,
+        name='ChronicleAndroidBulkDataDownloader.app',
+        icon=None,
+        bundle_identifier='com.uzairbcm.chronicleandroidbulkdatadownloader',
+        info_plist={
+            'NSPrincipalClass': 'NSApplication',
+            'NSAppleScriptEnabled': False,
+            'NSHighResolutionCapable': True,
+            'CFBundleDisplayName': 'Chronicle Android Bulk Data Downloader',
+            'CFBundleName': 'ChronicleAndroidBulkDataDownloader',
+        },
+    ) 
