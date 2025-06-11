@@ -25,11 +25,17 @@ hidden_imports = [
     'datetime',
     'json',
     'shutil',
+    'src.main_window',
+    'src.download_worker',
+    'src.utils',
+    'src.constants',
+    'src.enums',
 ]
 
 # Include all module directories as data
 datas = [
     ('config', 'config'),
+    ('src', 'src'),
 ]
 
 a = Analysis(
