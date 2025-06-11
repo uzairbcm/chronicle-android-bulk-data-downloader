@@ -10,9 +10,10 @@ Not affiliated with Chronicle or GetMethodic, please visit them here: https://ge
 
 This application provides a GUI interface for downloading data from Chronicle studies, with features for:
 
-- Downloading various types of Chronicle data (raw usage events, preprocessed data, surveys, time use diaries)
+- Downloading various types of Chronicle data (raw usage events, preprocessed data, surveys, raw iOS sensor data, time use diaries)
 - Filtering participants by ID (inclusive or exclusive)
 - Organizing and archiving downloaded data
+- Optionally deleting zero byte files to ignore empty files
 
 ## Usage
 
@@ -26,4 +27,5 @@ This application provides a GUI interface for downloading data from Chronicle st
    - a. Exclusive filtering (default) excludes the IDs that you list
    - b. Inclusive filtering (when checkbox is checked) only downloads the IDs that you listed
 4. Check which data types to download
-5. Click the "Run" button
+5. Optionally check if you want to delete zero byte files
+6. Click the "Run" button
