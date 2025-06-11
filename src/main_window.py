@@ -738,7 +738,7 @@ class ChronicleBulkDataDownloader(QWidget):
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
                 chronicle_device_type = ChronicleDeviceType.ANDROID
             case ChronicleDownloadDataType.PREPROCESSED:
-                data_type_str = "Preprocessed Data"
+                data_type_str = "Downloaded Preprocessed Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
                 chronicle_device_type = ChronicleDeviceType.ANDROID
             case ChronicleDownloadDataType.SURVEY:
