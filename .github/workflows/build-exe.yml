@@ -38,8 +38,13 @@ jobs:
     - name: Determine version
       id: versioning
       run: |
-        # Get current version from the main script or default to 0.1.0
-        CURRENT_VERSION=$(grep -o 'VERSION = "[^"]*"' Chronicle_Android_bulk_data_downloader.py 2>/dev/null | cut -d'"' -f2 || echo "0.1.0")
+        # Default to 0.1.0 if no version is found
+        CURRENT_VERSION="0.1.0"
+        
+        # Try to get current version from config/version.py if it exists
+        if [ -f "config/version.py" ]; then
+          CURRENT_VERSION=$(grep -o '__version__ = "[^"]*"' config/version.py 2>/dev/null | cut -d'"' -f2 || echo "0.1.0")
+        fi
         
         if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
           # If this is a tag, use the tag name as version
@@ -87,11 +92,6 @@ jobs:
         echo "__version__ = \"$VERSION\"" >> config/version.py
         echo "__build_date__ = \"$(date +'%Y-%m-%d')\"" >> config/version.py
         
-        # Update version in main script
-        if [ -f "Chronicle_Android_bulk_data_downloader.py" ]; then
-          sed -i "s/VERSION = \".*\"/VERSION = \"$VERSION\"/" Chronicle_Android_bulk_data_downloader.py
-        fi
-        
         # Update version in spec file
         if [ -f "ChronicleAndroidBulkDataDownloader.spec" ]; then
           # Replace placeholder with actual version in spec file
@@ -104,7 +104,6 @@ jobs:
         name: version-info
         path: |
           config/version.py
-          Chronicle_Android_bulk_data_downloader.py
           ChronicleAndroidBulkDataDownloader.spec
 
   build-windows:
@@ -278,11 +277,13 @@ jobs:
       run: |
         # Ensure build was successful
         if (Test-Path dist/ChronicleAndroidBulkDataDownloader) {
-          # Extract version safely
+          # Extract version safely from config/version.py
+          $today = Get-Date -Format "yyyy.MM.dd"
           try {
-            $version = python -c "import re; match = re.search(r'VERSION = \"(.*)\"', [System.IO.File]::ReadAllText('Chronicle_Android_bulk_data_downloader.py')); print(match.Groups[1].Value if match else '0.1.0')"
+            $today_escaped = $today -replace '\.', '\.'
+            $version = python -c "import re; import os; today='$today'; version_file = os.path.join('config', 'version.py'); match = re.search(r'__version__ = \"(.*)\"', [System.IO.File]::ReadAllText(version_file) if os.path.exists(version_file) else ''); print(match.Groups[1].Value if match and match.Groups[1].Value else today)"
           } catch {
-            $version = Get-Date -Format "yyyy.MM.dd"
+            $version = $today
           }
           
           # Create a temporary directory for all files
@@ -365,9 +366,6 @@ jobs:
         # Ensure python is in PATH
         export PATH="$pythonLocation/bin:$PATH"
         
-        # Make script executable if needed
-        chmod +x Chronicle_Android_bulk_data_downloader.py || true
-        
         # Build macOS app bundle with debug output enabled
         python -m PyInstaller --clean ChronicleAndroidBulkDataDownloader.spec
         
@@ -412,8 +410,9 @@ jobs:
       
     - name: Create DMG package
       run: |
-        # Extract version
-        VERSION=$(python3 -c "import re; match = re.search(r'VERSION = \"(.*)\"', open('Chronicle_Android_bulk_data_downloader.py').read()); print(match.group(1) if match else '0.1.0')")
+        # Extract version from config/version.py
+        TODAY_DATE=$(date +'%Y.%m.%d')
+        VERSION=$(python3 -c "import re; import os; today='$TODAY_DATE'; version_file = os.path.join('config', 'version.py'); match = re.search(r'__version__ = \"(.*)\"', open(version_file).read() if os.path.exists(version_file) else ''); print(match.group(1) if match else today)")
         echo "Using version: $VERSION"
         
         # Create a temporary directory
