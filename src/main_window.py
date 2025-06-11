@@ -6,16 +6,13 @@ import json
 import logging
 import shutil
 import sys
-import traceback
 from datetime import datetime as datetime_class
-from datetime import tzinfo
-from enum import StrEnum
 from pathlib import Path
 
 import aiofiles
 import httpx
 import regex as re
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -33,207 +30,17 @@ from PyQt6.QtWidgets import (
 )
 
 from config.version import __build_date__, __version__
+from src.constants import (
+    CONNECTION_TIMEOUT,
+    MAX_RETRIES,
+    RATE_LIMIT_DELAY,
+    REQUEST_TIMEOUT,
+)
+from src.download_worker import DownloadThreadWorker
+from src.enums import ChronicleDownloadDataType
+from src.utils import get_local_timezone, get_matching_files_from_folder
 
-# HTTP client constants
-MAX_RETRIES = 1
-CONNECTION_TIMEOUT = 30
-REQUEST_TIMEOUT = 60
-RATE_LIMIT_DELAY = 3  # seconds between requests
-
-
-class FilterType(StrEnum):
-    """
-    Enum for filter types used in the application.
-    """
-
-    INCLUSIVE = "Inclusive"
-    EXCLUSIVE = "Exclusive"
-
-
-class ChronicleDeviceType(StrEnum):
-    """
-    Enum for different types of devices supported by Chronicle.
-    """
-
-    AMAZON = "Amazon Fire"
-    ANDROID = "Android"
-    IPHONE = "iPhone"
-
-
-class ChronicleDownloadDataType(StrEnum):
-    """
-    Enum for different types of data collected by Chronicle.
-    """
-
-    RAW = "UsageEvents"
-    SURVEY = "AppUsageSurvey"
-    PREPROCESSED = "Preprocessed"
-    IOSSENSOR = "IOSSensor"
-    TIME_USE_DIARY_DAYTIME = "DayTime"
-    TIME_USE_DIARY_NIGHTTIME = "NightTime"
-    TIME_USE_DIARY_SUMMARIZED = "Summarized"
-
-
-def get_matching_files_from_folder(
-    folder: Path | str,
-    file_matching_pattern: str,
-    ignore_names: list[str] | None = None,
-) -> list[Path]:
-    """
-    Retrieves a list of files from a specified folder that match a given pattern.
-    """
-    LOGGER.debug(f"Getting matching files from folder: {folder} with pattern: {file_matching_pattern}")
-    if not ignore_names:
-        ignore_names = []
-    matching_files = [
-        Path(f)
-        for f in Path(folder).rglob("**")
-        if Path(f).is_file() and re.search(file_matching_pattern, str(f.name)) and all(ignored not in str(f) for ignored in ignore_names)
-    ]
-    LOGGER.debug(f"Found {len(matching_files)} matching files")
-    return matching_files
-
-
-def get_local_timezone() -> tzinfo | None:
-    """
-    Retrieves the local timezone of the system.
-    """
-    return datetime_class.now(datetime.timezone.utc).astimezone().tzinfo
-
-
-class DownloadThreadWorker(QThread):
-    """
-    A worker thread for downloading Chronicle Android bulk data.
-    """
-
-    finished = pyqtSignal()
-    error = pyqtSignal(str)
-    progress = pyqtSignal(int)
-    progress_text = pyqtSignal(str)
-    cancelled = pyqtSignal()
-
-    def __init__(self, parent_: ChronicleAndroidBulkDataDownloader) -> None:
-        super().__init__(parent_)
-        self.parent_ = parent_
-        self.current_progress = 0
-        self.total_progress = 100
-        self.files_completed = 0
-        self.total_files = 0
-        self.is_cancelled = False
-        self._client_lock = asyncio.Lock()
-
-    def run(self) -> None:
-        """
-        Runs the download process in a separate thread.
-        """
-        try:
-            self._run()
-        except Exception:
-            self.error.emit(f"An error occurred while downloading the data: {traceback.format_exc()}")
-
-    def cancel(self) -> None:
-        """
-        Signals the worker to cancel the download process.
-        """
-        self.is_cancelled = True
-        self.cancelled.emit()
-        LOGGER.info("Download cancellation requested")
-
-        # Emit finished signal directly to ensure UI updates
-        # This will be processed after the current operation completes
-        QTimer.singleShot(100, self.finished.emit)
-
-    def _run(self):
-        """
-        The main logic for downloading the data.
-        """
-        # Validate inputs
-        if not self.parent_.download_folder:
-            self.error.emit("Please select a download folder.")
-            LOGGER.warning("No download folder selected")
-            return
-
-        expected_study_id_length = 36
-        if len(self.parent_.study_id_entry.text().strip()) < expected_study_id_length:
-            self.error.emit("Please enter a valid Chronicle study ID.")
-            LOGGER.warning("Invalid study ID entered")
-            return
-
-        if self.parent_.inclusive_filter_checkbox.isChecked() and not self.parent_.participant_ids_to_filter_list_entry.toPlainText().strip():
-            self.error.emit("Please enter a valid list of participant IDs to *include* when the *inclusive* list checkbox is checked.")
-            LOGGER.warning("Invalid participant IDs list entered for inclusive filter")
-            return
-
-        # Initialize progress
-        self.progress.emit(0)
-
-        try:
-            # Execute download
-            asyncio.run(self.parent_.download_participant_Chronicle_data_from_study(self))
-        except httpx.HTTPStatusError as e:
-            error_code = e.response.status_code
-            description = {
-                401: "Unauthorized. Please check the authorization token and try again.",
-                403: "Forbidden",
-                404: "Not Found",
-            }.get(error_code, "Unknown")
-
-            LOGGER.exception(f"HTTP error occurred: {error_code} {description}")
-            self.error.emit(f"An HTTP error occurred while attempting to download the data:\n\n{error_code} {description}")
-            return
-        except Exception:
-            LOGGER.exception("An error occurred while downloading the data")
-            self.error.emit(f"An error occurred while downloading the data: {traceback.format_exc()}")
-            return
-        else:
-            if self.is_cancelled:
-                LOGGER.info("Download process was cancelled by user")
-                return
-
-            # Process downloaded data
-            self.update_progress(90)
-            self.parent_.archive_downloaded_data()
-            self.update_progress(95)
-            self.parent_.organize_downloaded_data()
-            self.update_progress(100)  # Complete
-
-            # Save config
-            with self.parent_.get_config_path().open("w") as f:
-                f.write(
-                    json.dumps(
-                        {
-                            "download_folder": str(self.parent_.download_folder),
-                            "study_id": self.parent_.study_id_entry.text().strip(),
-                            "participant_ids_to_filter": self.parent_.participant_ids_to_filter_list_entry.toPlainText(),
-                            "inclusive_checked": self.parent_.inclusive_filter_checkbox.isChecked(),
-                            "raw_checked": self.parent_.download_raw_data_checkbox.isChecked(),
-                            "preprocessed_checked": self.parent_.download_preprocessed_data_checkbox.isChecked(),
-                            "survey_checked": self.parent_.download_survey_data_checkbox.isChecked(),
-                            "time_use_diary_daytime_checked": self.parent_.download_time_use_diary_daytime_checkbox.isChecked(),
-                            "time_use_diary_nighttime_checked": self.parent_.download_time_use_diary_nighttime_checkbox.isChecked(),
-                            "time_use_diary_summarized_checked": self.parent_.download_time_use_diary_summarized_checkbox.isChecked(),
-                        }
-                    )
-                )
-            LOGGER.debug("Data download complete")
-            self.finished.emit()
-
-    def update_progress(self, value: int, completed_files: int | None = None, total_files: int | None = None) -> None:
-        """
-        Updates the progress value and emits the progress signal.
-        """
-        self.current_progress = value
-        self.progress.emit(value)
-
-        # Update file counts if provided
-        if completed_files is not None and total_files is not None:
-            self.completed_downloads = completed_files
-            self.total_downloads = total_files
-
-            # Format the progress text differently based on progress state
-            progress_text = f"Downloaded {completed_files} of {total_files} files" if value < 100 else f"Complete! Downloaded {total_files} files"
-
-            self.progress_text.emit(progress_text)
+LOGGER = logging.getLogger(__name__)
 
 
 class ChronicleAndroidBulkDataDownloader(QWidget):
@@ -265,6 +72,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.dated_file_pattern: str = r"([\s\S]*(\d{2}[\.|-]\d{2}[\.|-]\d{4})[\s\S]*.csv)"
         self.raw_data_file_pattern: str = r"[\s\S]*(Raw)[\s\S]*.csv"
         self.survey_data_file_pattern: str = r"[\s\S]*(Survey)[\s\S]*.csv"
+        self.ios_sensor_data_file_pattern: str = r"[\s\S]*(IOSSensor)[\s\S]*.csv"
         self.preprocessed_download_data_file_pattern: str = r"[\s\S]*(Downloaded Preprocessed)[\s\S]*.csv"
         self.time_use_diary_download_data_file_pattern: str = r"[\s\S]*(Time Use Diary)[\s\S]*.csv"
 
@@ -274,6 +82,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self._http_client = None
 
         self.worker = None
+        self.ios_sensor_warning_label: QLabel | None = None
         # Initialize UI
         self._init_UI()
         self._load_and_set_config()
@@ -310,7 +119,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         """
         LOGGER.debug("Initializing UI")
         self.setWindowTitle(f"Chronicle Android Bulk Data Downloader v{__version__} Build {__build_date__}")
-        self.setGeometry(100, 100, 500, 400)  # Made a bit taller for progress bar
+        self.setGeometry(100, 100, 500, 450)  # Made a bit taller for additional options
 
         main_layout = QVBoxLayout()
 
@@ -330,12 +139,20 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         main_layout.addWidget(self._create_participant_ids_entry_group())
         main_layout.addSpacing(10)
 
-        # Add checkbox layout
+        # Add basic data checkbox layout
         main_layout.addLayout(self._create_basic_data_checkbox_layout())
+        main_layout.addSpacing(10)
+
+        # Add iOS sensor data checkbox layout
+        main_layout.addLayout(self._create_ios_sensor_checkbox_layout())
         main_layout.addSpacing(10)
 
         # Add time use diary checkbox layout
         main_layout.addLayout(self._create_time_use_diary_checkbox_layout())
+        main_layout.addSpacing(10)
+
+        # Add options checkbox layout
+        main_layout.addLayout(self._create_options_checkbox_layout())
         main_layout.addSpacing(10)
 
         # Add the progress bar
@@ -493,7 +310,6 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         group_box = QGroupBox("Participant IDs Entry")
         group_layout = QVBoxLayout()
 
-        # Add label for participant IDs entry
         label_layout = QHBoxLayout()
         label_layout.addStretch()
         self.list_ids_label = QLabel("List of participant IDs to *exclude* (separated by commas):")
@@ -501,7 +317,6 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         label_layout.addStretch()
         group_layout.addLayout(label_layout)
 
-        # Add checkbox for inclusive filter
         checkbox_layout = QHBoxLayout()
         checkbox_layout.addStretch()
         self.inclusive_filter_checkbox = QCheckBox("Use *Inclusive* List Instead")
@@ -510,7 +325,6 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         checkbox_layout.addStretch()
         group_layout.addLayout(checkbox_layout)
 
-        # Add text edit for participant IDs entry
         entry_layout = QHBoxLayout()
         entry_layout.addStretch()
         self.participant_ids_to_filter_list_entry = QTextEdit()
@@ -547,24 +361,73 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         else:
             LOGGER.warning("Could not center window - primary screen not available")
 
-    def _create_basic_data_checkbox_layout(self) -> QHBoxLayout:
+    def _create_basic_data_checkbox_layout(self) -> QVBoxLayout:
         """
-        Creates the layout for the checkboxes.
+        Creates the basic data checkbox layout.
         """
+        main_layout = QVBoxLayout()
+
+        self.ios_sensor_warning_label = QLabel("Uncheck iOS Sensor data download to download Android data types")
+        self.ios_sensor_warning_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        self.ios_sensor_warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.ios_sensor_warning_label.hide()
+        main_layout.addWidget(self.ios_sensor_warning_label)
+
         checkbox_layout = QHBoxLayout()
         checkbox_layout.addStretch()
 
         self.download_raw_data_checkbox = QCheckBox("Download Raw Data")
+        self.download_raw_data_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.download_raw_data_checkbox)
 
         self.download_preprocessed_data_checkbox = QCheckBox("Download Preprocessed Data")
+        self.download_preprocessed_data_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.download_preprocessed_data_checkbox)
 
         self.download_survey_data_checkbox = QCheckBox("Download Survey Data")
+        self.download_survey_data_checkbox.setChecked(True)
         checkbox_layout.addWidget(self.download_survey_data_checkbox)
 
         checkbox_layout.addStretch()
+        main_layout.addLayout(checkbox_layout)
+        return main_layout
+
+    def _create_ios_sensor_checkbox_layout(self) -> QHBoxLayout:
+        """
+        Creates the layout for the iOS sensor checkbox.
+        """
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.addStretch()
+
+        self.download_ios_sensor_checkbox = QCheckBox("Download iOS Sensor Data")
+        self.download_ios_sensor_checkbox.stateChanged.connect(self._handle_ios_sensor_checkbox_state_changed)
+        checkbox_layout.addWidget(self.download_ios_sensor_checkbox)
+
+        checkbox_layout.addStretch()
         return checkbox_layout
+
+    def _handle_ios_sensor_checkbox_state_changed(self):
+        """
+        Handles the state change of the iOS sensor checkbox.
+        When checked, disables all other data type checkboxes.
+        """
+        is_checked = self.download_ios_sensor_checkbox.isChecked()
+        if self.ios_sensor_warning_label is not None:
+            self.ios_sensor_warning_label.setVisible(is_checked)
+
+        if is_checked:
+            # Disable other data type checkboxes
+            self.download_raw_data_checkbox.setEnabled(False)
+            self.download_preprocessed_data_checkbox.setEnabled(False)
+            self.download_survey_data_checkbox.setEnabled(False)
+            self.download_raw_data_checkbox.setChecked(False)
+            self.download_preprocessed_data_checkbox.setChecked(False)
+            self.download_survey_data_checkbox.setChecked(False)
+        else:
+            # Enable other data type checkboxes
+            self.download_raw_data_checkbox.setEnabled(True)
+            self.download_preprocessed_data_checkbox.setEnabled(True)
+            self.download_survey_data_checkbox.setEnabled(True)
 
     def _create_time_use_diary_checkbox_layout(self) -> QHBoxLayout:
         """
@@ -581,6 +444,19 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
 
         self.download_time_use_diary_summarized_checkbox = QCheckBox("Download Summarized Time Use Diary")
         checkbox_layout.addWidget(self.download_time_use_diary_summarized_checkbox)
+
+        checkbox_layout.addStretch()
+        return checkbox_layout
+
+    def _create_options_checkbox_layout(self) -> QHBoxLayout:
+        """
+        Creates the layout for additional options checkboxes.
+        """
+        checkbox_layout = QHBoxLayout()
+        checkbox_layout.addStretch()
+
+        self.delete_zero_byte_files_checkbox = QCheckBox("Delete Zero-Byte Files After Download")
+        checkbox_layout.addWidget(self.delete_zero_byte_files_checkbox)
 
         checkbox_layout.addStretch()
         return checkbox_layout
@@ -617,12 +493,16 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.download_raw_data_checkbox.setChecked(config.get("raw_checked", False))
         self.download_preprocessed_data_checkbox.setChecked(config.get("preprocessed_checked", False))
         self.download_survey_data_checkbox.setChecked(config.get("survey_checked", False))
+        self.download_ios_sensor_checkbox.setChecked(config.get("ios_sensor_checked", False))
         self.download_time_use_diary_daytime_checkbox.setChecked(config.get("time_use_diary_daytime_checked", False))
         self.download_time_use_diary_nighttime_checkbox.setChecked(config.get("time_use_diary_nighttime_checked", False))
         self.download_time_use_diary_summarized_checkbox.setChecked(config.get("time_use_diary_summarized_checked", False))
+        self.delete_zero_byte_files_checkbox.setChecked(config.get("delete_zero_byte_files_checked", False))
 
         if self.download_folder:
             self.download_folder_label.setText(str(self.download_folder))
+
+        self._handle_ios_sensor_checkbox_state_changed()
 
         LOGGER.debug("Set configuration from loaded file")
 
@@ -678,15 +558,29 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         """
         self.raw_data_folder = Path(self.download_folder) / "Chronicle Android Raw Data Downloads"
         self.survey_data_folder = Path(self.download_folder) / "Chronicle Android Survey Data Downloads"
+        self.ios_sensor_data_folder = Path(self.download_folder) / "Chronicle iOS Sensor Data Downloads"
         self.downloaded_preprocessed_data_folder = Path(self.download_folder) / "Chronicle Android Preprocessed Data Downloads"
-        self.time_use_diary_data_folder = Path(self.download_folder) / "Chronicle Android Time Use Diary Data Downloads"
+        self.time_use_diary_data_folder = Path(self.download_folder) / "Chronicle Time Use Diary Data Downloads"
 
-        self.raw_data_folder.mkdir(parents=True, exist_ok=True)
-        self.survey_data_folder.mkdir(parents=True, exist_ok=True)
-        self.downloaded_preprocessed_data_folder.mkdir(parents=True, exist_ok=True)
-        self.time_use_diary_data_folder.mkdir(parents=True, exist_ok=True)
+        if self.download_raw_data_checkbox.isChecked():
+            self.raw_data_folder.mkdir(parents=True, exist_ok=True)
 
-        # Move raw data files
+        if self.download_survey_data_checkbox.isChecked():
+            self.survey_data_folder.mkdir(parents=True, exist_ok=True)
+
+        if self.download_ios_sensor_checkbox.isChecked():
+            self.ios_sensor_data_folder.mkdir(parents=True, exist_ok=True)
+
+        if self.download_preprocessed_data_checkbox.isChecked():
+            self.downloaded_preprocessed_data_folder.mkdir(parents=True, exist_ok=True)
+
+        if (
+            self.download_time_use_diary_daytime_checkbox.isChecked()
+            or self.download_time_use_diary_nighttime_checkbox.isChecked()
+            or self.download_time_use_diary_summarized_checkbox.isChecked()
+        ):
+            self.time_use_diary_data_folder.mkdir(parents=True, exist_ok=True)
+
         unorganized_raw_data_files = get_matching_files_from_folder(
             folder=self.download_folder,
             file_matching_pattern=self.raw_data_file_pattern,
@@ -697,7 +591,6 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             shutil.copy(src=file, dst=self.raw_data_folder)
             file.unlink()
 
-        # Move survey data files
         unorganized_survey_data_files = get_matching_files_from_folder(
             folder=self.download_folder,
             file_matching_pattern=self.survey_data_file_pattern,
@@ -708,7 +601,16 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             shutil.copy(src=file, dst=self.survey_data_folder)
             file.unlink()
 
-        # Move preprocessed data files
+        unorganized_ios_sensor_data_files = get_matching_files_from_folder(
+            folder=self.download_folder,
+            file_matching_pattern=self.ios_sensor_data_file_pattern,
+            ignore_names=["Archive", "Chronicle iOS Sensor Data Downloads"],
+        )
+
+        for file in unorganized_ios_sensor_data_files:
+            shutil.copy(src=file, dst=self.ios_sensor_data_folder)
+            file.unlink()
+
         unorganized_downloaded_preprocessed_files = get_matching_files_from_folder(
             folder=self.download_folder,
             file_matching_pattern=self.preprocessed_download_data_file_pattern,
@@ -722,12 +624,19 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         unorganized_time_use_diary_data_files = get_matching_files_from_folder(
             folder=self.download_folder,
             file_matching_pattern=self.time_use_diary_download_data_file_pattern,
-            ignore_names=["Archive", "Chronicle Android Time Use Diary Data Downloads"],
+            ignore_names=["Archive", "Chronicle Time Use Diary Data Downloads"],
         )
 
         for file in unorganized_time_use_diary_data_files:
             shutil.copy(src=file, dst=self.time_use_diary_data_folder)
             file.unlink()
+
+        if self.delete_zero_byte_files_checkbox.isChecked():
+            LOGGER.debug("Checking for and deleting zero-byte files")
+            all_csv_files = get_matching_files_from_folder(folder=self.download_folder, file_matching_pattern=r".*\.csv$", ignore_names=["Archive"])
+
+            for file in all_csv_files:
+                self.delete_zero_byte_file(file)
 
         LOGGER.debug("Finished organizing downloaded Chronicle Android data.")
 
@@ -827,6 +736,9 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
             case ChronicleDownloadDataType.SURVEY:
                 data_type_str = "Survey Data"
+                url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
+            case ChronicleDownloadDataType.IOSSENSOR:
+                data_type_str = "IOSSensor Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
             case ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME:
                 data_type_str = "Time Use Diary Daytime Data"
@@ -941,6 +853,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                     self.download_raw_data_checkbox.isChecked(),
                     self.download_preprocessed_data_checkbox.isChecked(),
                     self.download_survey_data_checkbox.isChecked(),
+                    self.download_ios_sensor_checkbox.isChecked(),
                     self.download_time_use_diary_daytime_checkbox.isChecked(),
                     self.download_time_use_diary_nighttime_checkbox.isChecked(),
                     self.download_time_use_diary_summarized_checkbox.isChecked(),
@@ -1010,6 +923,23 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                 if worker.is_cancelled:
                     break
 
+                if self.download_ios_sensor_checkbox.isChecked():
+                    success = await self._download_participant_Chronicle_data_type(
+                        worker=worker,
+                        participant_id=participant_id,
+                        Chronicle_download_data_type=ChronicleDownloadDataType.IOSSENSOR,
+                    )
+                    if success:
+                        downloads_completed += 1
+                        progress_value = 10 + int((downloads_completed / total_downloads) * 80)
+                        worker.update_progress(progress_value, downloads_completed, total_downloads)
+                        LOGGER.debug(
+                            f"Finished downloading {ChronicleDownloadDataType.IOSSENSOR} data for device {participant_id} ({i + 1}/{len(filtered_participant_id_list)})"
+                        )
+
+                if worker.is_cancelled:
+                    break
+
                 if self.download_time_use_diary_daytime_checkbox.isChecked():
                     success = await self._download_participant_Chronicle_data_type(
                         worker=worker,
@@ -1066,21 +996,16 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         """
         Initiates the download process.
         """
-        # Prevent multiple concurrent downloads
         if self.download_active:
             LOGGER.warning("Download already in progress, ignoring request")
             return
 
-        # Clean up any existing worker
         if self.worker is not None:
             if self.worker.isRunning():
-                # Request cancellation first
                 self.worker.cancel()
-                # Then properly terminate
                 self.worker.terminate()
                 self.worker.wait()
 
-            # Disconnect any connected signals
             try:
                 self.worker.finished.disconnect()
                 self.worker.error.disconnect()
@@ -1090,12 +1015,10 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                 if hasattr(self.worker, "cancelled"):
                     self.worker.cancelled.disconnect()
             except (RuntimeError, TypeError):
-                # Ignore errors if signals were not connected
                 pass
 
             self.worker.deleteLater()
 
-        # Create new worker and connect its signals
         self.worker = DownloadThreadWorker(self)
         self.worker.finished.connect(self.on_download_complete)
         self.worker.error.connect(self.on_download_error)
@@ -1105,10 +1028,8 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         if hasattr(self.worker, "cancelled"):
             self.worker.cancelled.connect(lambda: LOGGER.info("Download cancelled"))
 
-        # Set download_active flag before starting the worker
         self.download_active = True
 
-        # Start the worker
         self._disable_ui_during_download()
         self.progress_bar.setValue(0)
         self.worker.start()
@@ -1125,9 +1046,11 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.download_raw_data_checkbox.setEnabled(False)
         self.download_survey_data_checkbox.setEnabled(False)
         self.download_preprocessed_data_checkbox.setEnabled(False)
+        self.download_ios_sensor_checkbox.setEnabled(False)
         self.download_time_use_diary_daytime_checkbox.setEnabled(False)
         self.download_time_use_diary_nighttime_checkbox.setEnabled(False)
         self.download_time_use_diary_summarized_checkbox.setEnabled(False)
+        self.delete_zero_byte_files_checkbox.setEnabled(False)
         # Change run button to cancel button
         self.run_button.setText("Cancel")
         self.run_button.clicked.disconnect()
@@ -1143,12 +1066,23 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self.study_id_entry.setEnabled(True)
         self.inclusive_filter_checkbox.setEnabled(True)
         self.participant_ids_to_filter_list_entry.setEnabled(True)
-        self.download_raw_data_checkbox.setEnabled(True)
-        self.download_survey_data_checkbox.setEnabled(True)
-        self.download_preprocessed_data_checkbox.setEnabled(True)
+
+        # Re-enable checkboxes based on iOS sensor selection
+        if self.download_ios_sensor_checkbox.isChecked():
+            self._handle_ios_sensor_checkbox_state_changed()
+        else:
+            self.download_raw_data_checkbox.setEnabled(True)
+            self.download_survey_data_checkbox.setEnabled(True)
+            self.download_preprocessed_data_checkbox.setEnabled(True)
+            self._handle_ios_sensor_checkbox_state_changed()
+
+        self.download_ios_sensor_checkbox.setEnabled(True)
         self.download_time_use_diary_daytime_checkbox.setEnabled(True)
         self.download_time_use_diary_nighttime_checkbox.setEnabled(True)
         self.download_time_use_diary_summarized_checkbox.setEnabled(True)
+
+        self.delete_zero_byte_files_checkbox.setEnabled(True)
+
         # Restore run button
         self.run_button.setText("Run")
         self.run_button.clicked.disconnect()
@@ -1289,45 +1223,3 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self._enable_ui_after_download()
         self.progress_bar.setFormat("Error: %p%")
         LOGGER.error("Download error occurred")
-
-
-if __name__ == "__main__":
-    # Set up logging with proper path handling for app bundles
-    log_file = "Chronicle_Android_bulk_data_downloader.log"
-    if getattr(sys, "frozen", False):
-        # Running as PyInstaller bundle
-        bundle_dir = Path(sys.executable).parent
-        if sys.platform.startswith("darwin"):
-            # For macOS app bundles, ensure we use a writable location for logs
-            # Using ~/Library/Logs/ChronicleAndroidBulkDataDownloader/
-            log_dir = Path.home() / "Library" / "Logs" / "ChronicleAndroidBulkDataDownloader"
-            log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / "Chronicle_Android_bulk_data_downloader.log"
-        else:
-            # For Windows, keep log in same directory as executable
-            log_file = bundle_dir / log_file
-
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s.%(msecs)03d - %(process)d - %(thread)d - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(funcName)s - %(message)s",
-        handlers=[logging.FileHandler(log_file), logging.StreamHandler()],
-    )
-
-    LOGGER = logging.getLogger(__name__)
-    LOGGER.info(f"Application starting, version {__version__}, build date {__build_date__}")
-    LOGGER.info(f"Platform: {sys.platform}, Python: {sys.version}")
-    LOGGER.info(f"Working directory: {Path.cwd()}")
-    LOGGER.info(f"Log file location: {log_file}")
-
-    # Use OS-specific platform plugin
-    if sys.platform.startswith("win"):
-        sys.argv += ["-platform", "windows:darkmode=1"]
-    elif sys.platform.startswith("darwin"):
-        # Ensure we're using the correct platform for macOS
-        sys.argv += ["-platform", "cocoa"]
-        LOGGER.info("Using cocoa platform for macOS")
-
-    app = QApplication(sys.argv)
-    ex = ChronicleAndroidBulkDataDownloader()
-    ex.show()
-    sys.exit(app.exec())  # No underscore in PyQt6

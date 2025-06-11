@@ -33,7 +33,7 @@ datas = [
 ]
 
 a = Analysis(
-    ['Chronicle_Android_bulk_data_downloader.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=datas,
