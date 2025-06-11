@@ -87,7 +87,9 @@ class DownloadThreadWorker(QThread):
             }.get(error_code, "Unknown")
 
             LOGGER.exception(f"HTTP error occurred: {error_code} {description}")
-            self.error.emit(f"An HTTP error occurred while attempting to download the data:\n\n{error_code} {description}")
+            self.error.emit(
+                f"An HTTP error occurred while attempting to download the data:\n\n{error_code} {description}. Please ensure that the study and data type you chose correspond."
+            )
             return
         except Exception:
             LOGGER.exception("An error occurred while downloading the data")

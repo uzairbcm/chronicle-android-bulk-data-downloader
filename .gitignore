@@ -173,3 +173,4 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 Chronicle_Android_bulk_data_downloader_config.json
+Chronicle_bulk_data_downloader_config.json

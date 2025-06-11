@@ -680,7 +680,10 @@ class ChronicleBulkDataDownloader(QWidget):
             participant_id
             for participant_id in participant_id_list
             if participant_id is not None
-            and any(included_participant_id.lower() in participant_id.lower() for included_participant_id in participant_ids_to_filter)
+            and (
+                participant_id in participant_ids_to_filter
+                or any(participant_id.lower() == included_participant_id.lower() for included_participant_id in participant_ids_to_filter)
+            )
         ]
 
         filtered_participant_id_list.sort()
@@ -1234,7 +1237,7 @@ class ChronicleBulkDataDownloader(QWidget):
         """Get the path to the config file based on whether app is frozen or not."""
         if getattr(sys, "frozen", False):
             # If the application is frozen (e.g., PyInstaller bundle)
-            return Path(sys.executable).parent / "Chronicle_Bulk_Data_Downloader_config.json"
+            return Path(sys.executable).parent / "Chronicle_bulk_data_downloader_config.json"
         else:
             # If running from script
-            return Path("Chronicle_Bulk_Data_Downloader_config.json")
+            return Path("Chronicle_bulk_data_downloader_config.json")

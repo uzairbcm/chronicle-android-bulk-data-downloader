@@ -10,7 +10,7 @@ from src.main_window import ChronicleBulkDataDownloader
 
 def main():
     # Set up logging with proper path handling for app bundles
-    log_file = "Chronicle_Bulk_Data_Downloader.log"
+    log_file = "Chronicle_bulk_data_downloader.log"
     if getattr(sys, "frozen", False):
         # Running as PyInstaller bundle
         bundle_dir = Path(sys.executable).parent
@@ -19,7 +19,7 @@ def main():
             # Using ~/Library/Logs/ChronicleBulkDataDownloader/
             log_dir = Path.home() / "Library" / "Logs" / "ChronicleBulkDataDownloader"
             log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / "Chronicle_Bulk_Data_Downloader.log"
+            log_file = log_dir / "Chronicle_bulk_data_downloader.log"
         else:
             # For Windows, keep log in same directory as executable
             log_file = bundle_dir / log_file
