@@ -1,6 +1,6 @@
-# Chronicle Android Bulk Data Downloader
+# Chronicle Bulk Data Downloader
 
-A tool for downloading Chronicle Android data in bulk. 
+A tool for downloading Chronicle data in bulk. 
 
 Not affiliated with Chronicle or GetMethodic, please visit them here: https://getmethodic.com/
 

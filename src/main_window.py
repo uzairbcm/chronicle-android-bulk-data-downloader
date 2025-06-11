@@ -37,15 +37,15 @@ from src.constants import (
     REQUEST_TIMEOUT,
 )
 from src.download_worker import DownloadThreadWorker
-from src.enums import ChronicleDownloadDataType
+from src.enums import ChronicleDeviceType, ChronicleDownloadDataType
 from src.utils import get_local_timezone, get_matching_files_from_folder
 
 LOGGER = logging.getLogger(__name__)
 
 
-class ChronicleAndroidBulkDataDownloader(QWidget):
+class ChronicleBulkDataDownloader(QWidget):
     """
-    A QWidget-based application for downloading bulk data from Chronicle Android.
+    A QWidget-based application for downloading bulk data from Chronicle.
     """
 
     @staticmethod
@@ -55,14 +55,14 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         """
         if getattr(sys, "frozen", False):
             # Running as PyInstaller EXE
-            return Path(sys.executable).parent / "Chronicle_Android_bulk_data_downloader_config.json"
+            return Path(sys.executable).parent / "Chronicle_bulk_data_downloader_config.json"
         else:
             # Running as script
-            return Path("Chronicle_Android_bulk_data_downloader_config.json")
+            return Path("Chronicle_bulk_data_downloader_config.json")
 
     def __init__(self) -> None:
         """
-        Initializes the ChronicleAndroidBulkDataDownloader class.
+        Initializes the ChronicleBulkDataDownloader class.
         """
         super().__init__()
 
@@ -118,7 +118,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         Initializes the user interface.
         """
         LOGGER.debug("Initializing UI")
-        self.setWindowTitle(f"Chronicle Android Bulk Data Downloader v{__version__} Build {__build_date__}")
+        self.setWindowTitle(f"Chronicle Bulk Data Downloader v{__version__} Build {__build_date__}")
         self.setGeometry(100, 100, 500, 450)  # Made a bit taller for additional options
 
         main_layout = QVBoxLayout()
@@ -204,7 +204,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
 
         # Add label for download folder
         label_layout = QHBoxLayout()
-        self.download_folder_label = QLabel("Select the folder to download the Chronicle Android raw data to")
+        self.download_folder_label = QLabel("Select the folder to download the Chronicle data to")
         self.download_folder_label.setStyleSheet(
             """QLabel {
                 font-size: 10pt;
@@ -550,7 +550,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
                 shutil.copy(src=file, dst=archive_dir / file.name)
                 file.unlink()
 
-        LOGGER.debug("Finished archiving outdated Chronicle Android data.")
+        LOGGER.debug("Finished archiving outdated Chronicle data.")
 
     def organize_downloaded_data(self) -> None:
         """
@@ -638,7 +638,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             for file in all_csv_files:
                 self.delete_zero_byte_file(file)
 
-        LOGGER.debug("Finished organizing downloaded Chronicle Android data.")
+        LOGGER.debug("Finished organizing downloaded Chronicle data.")
 
     def _filter_participant_id_list(self, participant_id_list: list[str]) -> list[str]:
         """
@@ -726,20 +726,26 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             LOGGER.debug(f"Download cancelled for {participant_id}, {Chronicle_download_data_type}")
             return False
 
+        chronicle_device_type = None
+
         # Determine data type and URL
         match Chronicle_download_data_type:
             case ChronicleDownloadDataType.RAW:
                 data_type_str = "Raw Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
+                chronicle_device_type = ChronicleDeviceType.ANDROID
             case ChronicleDownloadDataType.PREPROCESSED:
-                data_type_str = "Downloaded Preprocessed Data"
+                data_type_str = "Preprocessed Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
+                chronicle_device_type = ChronicleDeviceType.ANDROID
             case ChronicleDownloadDataType.SURVEY:
                 data_type_str = "Survey Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
+                chronicle_device_type = ChronicleDeviceType.ANDROID
             case ChronicleDownloadDataType.IOSSENSOR:
                 data_type_str = "IOSSensor Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/study/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}&fileType=csv"
+                chronicle_device_type = ChronicleDeviceType.IPHONE
             case ChronicleDownloadDataType.TIME_USE_DIARY_DAYTIME:
                 data_type_str = "Time Use Diary Daytime Data"
                 url = f"https://api.getmethodic.com/chronicle/v3/time-use-diary/{self.study_id_entry.text().strip()}/participants/data?participantId={participant_id}&dataType={Chronicle_download_data_type}"
@@ -778,7 +784,7 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
             # Prepare output location
             output_filepath = (
                 Path(self.download_folder)
-                / f"{participant_id} Chronicle Android {data_type_str} {datetime_class.now(get_local_timezone()).strftime('%m-%d-%Y')}.csv"
+                / f"{participant_id} Chronicle{f' {chronicle_device_type.value}' if chronicle_device_type is not None else ''} {data_type_str} {datetime_class.now(get_local_timezone()).strftime('%m-%d-%Y')}.csv"
             )
             output_filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1223,3 +1229,12 @@ class ChronicleAndroidBulkDataDownloader(QWidget):
         self._enable_ui_after_download()
         self.progress_bar.setFormat("Error: %p%")
         LOGGER.error("Download error occurred")
+
+    def _get_config_file_path(self) -> Path:
+        """Get the path to the config file based on whether app is frozen or not."""
+        if getattr(sys, "frozen", False):
+            # If the application is frozen (e.g., PyInstaller bundle)
+            return Path(sys.executable).parent / "Chronicle_Bulk_Data_Downloader_config.json"
+        else:
+            # If running from script
+            return Path("Chronicle_Bulk_Data_Downloader_config.json")

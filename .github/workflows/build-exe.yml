@@ -1,4 +1,4 @@
-name: Build and Release Chronicle Android Bulk Data Downloader
+name: Build and Release Chronicle Bulk Data Downloader
 
 on:
   push:
@@ -93,9 +93,9 @@ jobs:
         echo "__build_date__ = \"$(date +'%Y-%m-%d')\"" >> config/version.py
         
         # Update version in spec file
-        if [ -f "ChronicleAndroidBulkDataDownloader.spec" ]; then
+        if [ -f "ChronicleBulkDataDownloader.spec" ]; then
           # Replace placeholder with actual version in spec file
-          sed -i "s/\${CURRENT_PROJECT_VERSION}/$VERSION/g" ChronicleAndroidBulkDataDownloader.spec
+          sed -i "s/\${CURRENT_PROJECT_VERSION}/$VERSION/g" ChronicleBulkDataDownloader.spec
         fi
     
     - name: Upload version artifact
@@ -104,7 +104,7 @@ jobs:
         name: version-info
         path: |
           config/version.py
-          ChronicleAndroidBulkDataDownloader.spec
+          ChronicleBulkDataDownloader.spec
 
   build-windows:
     needs: determine-version
@@ -132,11 +132,11 @@ jobs:
     
     - name: Build with PyInstaller
       run: |
-        pyinstaller --clean ChronicleAndroidBulkDataDownloader.spec
+        pyinstaller --clean ChronicleBulkDataDownloader.spec
     
     - name: Test executable startup time
       run: |
-        $exePath = "dist\ChronicleAndroidBulkDataDownloader\ChronicleAndroidBulkDataDownloader.exe"
+        $exePath = "dist\ChronicleBulkDataDownloader\ChronicleBulkDataDownloader.exe"
         
         # Check if the executable exists
         if (-not (Test-Path $exePath)) {
@@ -216,7 +216,7 @@ jobs:
         }
         catch {
           Write-Host "ERROR: `$_"
-          Get-Process | Where-Object { `$_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+          Get-Process | Where-Object { `$_.ProcessName -eq "ChronicleBulkDataDownloader" } | ForEach-Object { 
             Write-Host "Killing leftover process with ID: `$(`$_.Id)"
             Stop-Process -Id `$_.Id -Force -ErrorAction SilentlyContinue
           }
@@ -251,7 +251,7 @@ jobs:
             Remove-Job -Job $job -Force
             
             # Kill any remaining processes
-            Get-Process | Where-Object { $_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+            Get-Process | Where-Object { $_.ProcessName -eq "ChronicleBulkDataDownloader" } | ForEach-Object { 
               Write-Host "Killing leftover process with ID: $($_.Id)"
               Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
@@ -262,7 +262,7 @@ jobs:
           Write-Error "Error testing executable: $_"
           
           # Kill any remaining processes
-          Get-Process | Where-Object { $_.ProcessName -eq "ChronicleAndroidBulkDataDownloader" } | ForEach-Object { 
+          Get-Process | Where-Object { $_.ProcessName -eq "ChronicleBulkDataDownloader" } | ForEach-Object { 
             Write-Host "Killing leftover process with ID: $($_.Id)"
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
           }
@@ -276,7 +276,7 @@ jobs:
     - name: Create ZIP archive
       run: |
         # Ensure build was successful
-        if (Test-Path dist/ChronicleAndroidBulkDataDownloader) {
+        if (Test-Path dist/ChronicleBulkDataDownloader) {
           # Extract version safely from config/version.py
           $today = Get-Date -Format "yyyy.MM.dd"
           try {
@@ -287,7 +287,7 @@ jobs:
           }
           
           # Create a temporary directory for all files
-          $tempDir = "ChronicleAndroidBulkDataDownloader-win-$version"
+          $tempDir = "ChronicleBulkDataDownloader-win-$version"
           New-Item -Path $tempDir -ItemType Directory
           
           # Copy all repository files (except .git, dist, build, etc.)
@@ -304,11 +304,11 @@ jobs:
           
           # Copy the built executable files directly into the main directory
           Write-Host "Copying built executable..."
-          Copy-Item -Path dist/ChronicleAndroidBulkDataDownloader/* -Destination "$tempDir" -Recurse
+          Copy-Item -Path dist/ChronicleBulkDataDownloader/* -Destination "$tempDir" -Recurse
           
           # Create ZIP with all content
           Write-Host "Creating ZIP archive..."
-          Compress-Archive -Path $tempDir/* -DestinationPath "ChronicleAndroidBulkDataDownloader-win-$version.zip"
+          Compress-Archive -Path $tempDir/* -DestinationPath "ChronicleBulkDataDownloader-win-$version.zip"
           
           # Clean up temporary directory
           Remove-Item -Path $tempDir -Recurse -Force
@@ -321,14 +321,14 @@ jobs:
     - name: Upload executable as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-windows
-        path: dist/ChronicleAndroidBulkDataDownloader
+        name: ChronicleBulkDataDownloader-windows
+        path: dist/ChronicleBulkDataDownloader
         
     - name: Upload ZIP archive as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-win-zip
-        path: ChronicleAndroidBulkDataDownloader-win-*.zip
+        name: ChronicleBulkDataDownloader-win-zip
+        path: ChronicleBulkDataDownloader-win-*.zip
 
   build-macos:
     needs: determine-version
@@ -367,39 +367,39 @@ jobs:
         export PATH="$pythonLocation/bin:$PATH"
         
         # Build macOS app bundle with debug output enabled
-        python -m PyInstaller --clean ChronicleAndroidBulkDataDownloader.spec
+        python -m PyInstaller --clean ChronicleBulkDataDownloader.spec
         
         # Verbose output for directory contents
         echo "Contents of dist directory:"
         ls -la dist/
         
         # Verify the app bundle was created correctly
-        if [ -d "dist/ChronicleAndroidBulkDataDownloader.app" ]; then
+        if [ -d "dist/ChronicleBulkDataDownloader.app" ]; then
           echo "App bundle created successfully"
           echo "Directory structure of the app bundle:"
-          find "dist/ChronicleAndroidBulkDataDownloader.app" -type f | sort
+          find "dist/ChronicleBulkDataDownloader.app" -type f | sort
           
           # Check executable in MacOS directory
-          if [ -d "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS" ]; then
+          if [ -d "dist/ChronicleBulkDataDownloader.app/Contents/MacOS" ]; then
             echo "Contents of MacOS directory:"
-            ls -la "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS"
+            ls -la "dist/ChronicleBulkDataDownloader.app/Contents/MacOS"
             
             # Verify the executable exists and is executable
-            if [ -f "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS/ChronicleAndroidBulkDataDownloader" ]; then
+            if [ -f "dist/ChronicleBulkDataDownloader.app/Contents/MacOS/ChronicleBulkDataDownloader" ]; then
               echo "Executable found and should be runnable"
               
               # Check file permissions
-              ls -l "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS/ChronicleAndroidBulkDataDownloader"
+              ls -l "dist/ChronicleBulkDataDownloader.app/Contents/MacOS/ChronicleBulkDataDownloader"
               
               # Fix permissions if needed
-              chmod +x "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS/ChronicleAndroidBulkDataDownloader" || true
+              chmod +x "dist/ChronicleBulkDataDownloader.app/Contents/MacOS/ChronicleBulkDataDownloader" || true
             else
               echo "ERROR: Executable not found in MacOS directory"
               exit 1
             fi
           else
             echo "ERROR: MacOS directory not found in app bundle"
-            mkdir -p "dist/ChronicleAndroidBulkDataDownloader.app/Contents/MacOS"
+            mkdir -p "dist/ChronicleBulkDataDownloader.app/Contents/MacOS"
           fi
         else
           echo "ERROR: App bundle creation failed"
@@ -416,7 +416,7 @@ jobs:
         echo "Using version: $VERSION"
         
         # Create a temporary directory
-        TEMP_DIR="ChronicleAndroidBulkDataDownloader-mac-$VERSION"
+        TEMP_DIR="ChronicleBulkDataDownloader-mac-$VERSION"
         mkdir -p "$TEMP_DIR"
         
         # Copy repository files (except large/system directories)
@@ -428,30 +428,30 @@ jobs:
               . "$TEMP_DIR/"
         
         # Check if the app bundle exists and copy it
-        if [ -d "dist/ChronicleAndroidBulkDataDownloader.app" ]; then
+        if [ -d "dist/ChronicleBulkDataDownloader.app" ]; then
           echo "Copying built application..."
           # Using ditto to preserve permissions and metadata
-          ditto "dist/ChronicleAndroidBulkDataDownloader.app" "$TEMP_DIR/ChronicleAndroidBulkDataDownloader.app"
+          ditto "dist/ChronicleBulkDataDownloader.app" "$TEMP_DIR/ChronicleBulkDataDownloader.app"
           
           # Verify the app was copied correctly
-          if [ -d "$TEMP_DIR/ChronicleAndroidBulkDataDownloader.app" ]; then
+          if [ -d "$TEMP_DIR/ChronicleBulkDataDownloader.app" ]; then
             echo "App bundle copied successfully"
           else
             echo "ERROR: App bundle copy failed"
             exit 1
           fi
         else
-          echo "ERROR: App bundle not found at dist/ChronicleAndroidBulkDataDownloader.app"
+          echo "ERROR: App bundle not found at dist/ChronicleBulkDataDownloader.app"
           ls -la dist/
           exit 1
         fi
         
         # Create DMG using hdiutil directly
         echo "Creating DMG..."
-        DMG_NAME="ChronicleAndroidBulkDataDownloader-mac-$VERSION.dmg"
+        DMG_NAME="ChronicleBulkDataDownloader-mac-$VERSION.dmg"
         
         # Create temporary DMG
-        hdiutil create -volname "ChronicleAndroidBulkDataDownloader" \
+        hdiutil create -volname "ChronicleBulkDataDownloader" \
                        -srcfolder "$TEMP_DIR" \
                        -ov -format UDRW \
                        -fs HFS+ \
@@ -480,15 +480,15 @@ jobs:
     - name: Upload app bundle as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-mac-app
-        path: dist/ChronicleAndroidBulkDataDownloader.app
+        name: ChronicleBulkDataDownloader-mac-app
+        path: dist/ChronicleBulkDataDownloader.app
         if-no-files-found: warn
         
     - name: Upload DMG as artifact
       uses: actions/upload-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-mac-dmg
-        path: ChronicleAndroidBulkDataDownloader-mac-*.dmg
+        name: ChronicleBulkDataDownloader-mac-dmg
+        path: ChronicleBulkDataDownloader-mac-*.dmg
         if-no-files-found: error
 
   release:
@@ -509,13 +509,13 @@ jobs:
     - name: Download Windows ZIP artifact
       uses: actions/download-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-win-zip
+        name: ChronicleBulkDataDownloader-win-zip
         path: artifacts
     
     - name: Download macOS DMG artifact
       uses: actions/download-artifact@v4
       with:
-        name: ChronicleAndroidBulkDataDownloader-mac-dmg
+        name: ChronicleBulkDataDownloader-mac-dmg
         path: artifacts
     
     - name: List artifacts
@@ -528,8 +528,8 @@ jobs:
       with:
         name: Release ${{ needs.determine-version.outputs.version }}
         files: |
-          artifacts/ChronicleAndroidBulkDataDownloader-win-*.zip
-          artifacts/ChronicleAndroidBulkDataDownloader-mac-*.dmg
+          artifacts/ChronicleBulkDataDownloader-win-*.zip
+          artifacts/ChronicleBulkDataDownloader-mac-*.dmg
         draft: false
         prerelease: false
         generate_release_notes: true

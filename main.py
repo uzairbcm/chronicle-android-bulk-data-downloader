@@ -5,21 +5,21 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 
 from config.version import __build_date__, __version__
-from src.main_window import ChronicleAndroidBulkDataDownloader
+from src.main_window import ChronicleBulkDataDownloader
 
 
 def main():
     # Set up logging with proper path handling for app bundles
-    log_file = "Chronicle_Android_bulk_data_downloader.log"
+    log_file = "Chronicle_Bulk_Data_Downloader.log"
     if getattr(sys, "frozen", False):
         # Running as PyInstaller bundle
         bundle_dir = Path(sys.executable).parent
         if sys.platform.startswith("darwin"):
             # For macOS app bundles, ensure we use a writable location for logs
-            # Using ~/Library/Logs/ChronicleAndroidBulkDataDownloader/
-            log_dir = Path.home() / "Library" / "Logs" / "ChronicleAndroidBulkDataDownloader"
+            # Using ~/Library/Logs/ChronicleBulkDataDownloader/
+            log_dir = Path.home() / "Library" / "Logs" / "ChronicleBulkDataDownloader"
             log_dir.mkdir(parents=True, exist_ok=True)
-            log_file = log_dir / "Chronicle_Android_bulk_data_downloader.log"
+            log_file = log_dir / "Chronicle_Bulk_Data_Downloader.log"
         else:
             # For Windows, keep log in same directory as executable
             log_file = bundle_dir / log_file
@@ -45,7 +45,7 @@ def main():
         LOGGER.info("Using cocoa platform for macOS")
 
     app = QApplication(sys.argv)
-    ex = ChronicleAndroidBulkDataDownloader()
+    ex = ChronicleBulkDataDownloader()
     ex.show()
     sys.exit(app.exec())  # No underscore in PyQt6
 

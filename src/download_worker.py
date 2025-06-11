@@ -10,7 +10,7 @@ import httpx
 from PyQt6.QtCore import QThread, QTimer, pyqtSignal
 
 if TYPE_CHECKING:
-    from .main_window import ChronicleAndroidBulkDataDownloader
+    from .main_window import ChronicleBulkDataDownloader
 
 
 LOGGER = logging.getLogger(__name__)
@@ -18,7 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 class DownloadThreadWorker(QThread):
     """
-    A worker thread for downloading Chronicle Android bulk data.
+    A worker thread for downloading Chronicle bulk data.
     """
 
     finished = pyqtSignal()
@@ -27,7 +27,7 @@ class DownloadThreadWorker(QThread):
     progress_text = pyqtSignal(str)
     cancelled = pyqtSignal()
 
-    def __init__(self, parent_: ChronicleAndroidBulkDataDownloader) -> None:
+    def __init__(self, parent_: ChronicleBulkDataDownloader) -> None:
         super().__init__(parent_)
         self.parent_ = parent_
         self.current_progress = 0

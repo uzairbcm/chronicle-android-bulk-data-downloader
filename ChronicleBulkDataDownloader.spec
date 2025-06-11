@@ -68,7 +68,7 @@ if is_windows:
         a.scripts,
         [],
         exclude_binaries=True,
-        name='ChronicleAndroidBulkDataDownloader',
+        name='ChronicleBulkDataDownloader',
         debug=False,
         bootloader_ignore_signals=True,
         strip=True,
@@ -92,7 +92,7 @@ if is_windows:
         strip=False,
         upx=True,
         upx_exclude=['vcruntime140.dll', 'python*.dll', '*.pyd'],
-        name='ChronicleAndroidBulkDataDownloader',
+        name='ChronicleBulkDataDownloader',
     )
 
 # macOS App configuration
@@ -102,7 +102,7 @@ if is_macos:
         a.scripts,
         [],
         exclude_binaries=True,
-        name='ChronicleAndroidBulkDataDownloader',
+        name='ChronicleBulkDataDownloader',
         debug=False,
         bootloader_ignore_signals=False,
         strip=False,  # Setting to False to avoid stripping symbols that might be needed
@@ -122,19 +122,19 @@ if is_macos:
         a.datas,
         strip=False,
         upx=True,
-        name='ChronicleAndroidBulkDataDownloader',
+        name='ChronicleBulkDataDownloader',
     )
     
     app = BUNDLE(
         coll,
-        name='ChronicleAndroidBulkDataDownloader.app',
+        name='ChronicleBulkDataDownloader.app',
         icon=None,
-        bundle_identifier='com.uzairbcm.chronicleandroidbulkdatadownloader',
+        bundle_identifier='com.uzairbcm.chroniclebulkdatadownloader',
         info_plist={
             'NSPrincipalClass': 'NSApplication',
             'NSAppleScriptEnabled': False,
             'NSHighResolutionCapable': True,
-            'CFBundleDisplayName': 'Chronicle Android Bulk Data Downloader',
-            'CFBundleName': 'ChronicleAndroidBulkDataDownloader',
+            'CFBundleDisplayName': 'Chronicle Bulk Data Downloader',
+            'CFBundleName': 'ChronicleBulkDataDownloader',
         },
     ) 
