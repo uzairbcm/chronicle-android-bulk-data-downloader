@@ -1,5 +1,7 @@
 # Chronicle Bulk Data Downloader
 
+WORK IN PROGRESS, please feel free to open an issue or email at uzair.alam@bcm.edu if you experience any issues.
+
 A tool for downloading Chronicle data in bulk. 
 
 Not affiliated with Chronicle or GetMethodic, please visit them here: https://getmethodic.com/
